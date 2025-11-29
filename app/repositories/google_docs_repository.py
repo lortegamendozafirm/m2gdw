@@ -5,6 +5,7 @@ import logging
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+from google.auth import default as google_auth_default
 
 from app.core import settings
 
@@ -19,40 +20,41 @@ class GoogleDocsRepository:
 
     SCOPES = ["https://www.googleapis.com/auth/documents"]
 
+
     def __init__(self, service_account_file: Optional[str] = None) -> None:
-        """
-        Inicializa el repositorio con las credenciales de la cuenta de servicio.
-
-        Args:
-            service_account_file: Ruta al archivo JSON de credenciales.
-                                  Si no se proporciona, se usa settings.GOOGLE_SERVICE_ACCOUNT_FILE.
-        """
-        # 👉 Prioridad: parámetro explícito > settings
+        # Prioridad: argumento explícito > settings
         self.service_account_file = service_account_file or settings.GOOGLE_SERVICE_ACCOUNT_FILE
-
-        if not self.service_account_file:
-            msg = (
-                "GOOGLE_SERVICE_ACCOUNT_FILE no está configurado. "
-                "Configura la variable de entorno GOOGLE_SERVICE_ACCOUNT_FILE "
-                "o pásala explícitamente al inicializar GoogleDocsRepository."
-            )
-            logger.error(msg)
-            raise RuntimeError(msg)
-
         self.credentials = None
         self.service = None
         self._authenticate()
 
     def _authenticate(self) -> None:
-        """Autentica usando la cuenta de servicio de Google Cloud."""
+        """Autentica usando JSON si existe; si no, ADC."""
         try:
-            self.credentials = service_account.Credentials.from_service_account_file(
-                self.service_account_file,
-                scopes=self.SCOPES,
-            )
-            # cache_discovery=False evita el warning del file_cache, pero es opcional
-            self.service = build("docs", "v1", credentials=self.credentials, cache_discovery=False)
-            logger.info("Autenticación exitosa con Google Docs API")
+            if self.service_account_file:
+                # 🔑 Modo archivo JSON local
+                self.credentials = service_account.Credentials.from_service_account_file(
+                    self.service_account_file,
+                    scopes=self.SCOPES,
+                )
+                self.service = build(
+                    "docs",
+                    "v1",
+                    credentials=self.credentials,
+                    cache_discovery=False,
+                )
+                logger.info(f"Autenticación con archivo de cuenta de servicio: {self.service_account_file}")
+            else:
+                # 🌩️ Modo ADC (Cloud Run, gcloud auth application-default, etc.)
+                creds, project_id = google_auth_default(scopes=self.SCOPES)
+                self.credentials = creds
+                self.service = build(
+                    "docs",
+                    "v1",
+                    credentials=self.credentials,
+                    cache_discovery=False,
+                )
+                logger.info(f"Autenticación ADC exitosa (proyecto detectado: {project_id})")
         except Exception as e:
             logger.error(f"Error en autenticación con Google Docs API: {e}")
             raise
