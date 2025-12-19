@@ -315,3 +315,61 @@ class GoogleDocsRepository:
             if "endIndex" in el:
                 max_end = max(max_end, el["endIndex"])
         return max_end - 1  # evitamos incluir el newline final
+    def fill_table_at_index(self, document_id: str, data: List[List[str]], location_index: int) -> Dict[str, Any]:
+            """
+            Rellena la tabla que se encuentra en una posición específica (location_index).
+            Útil cuando hay múltiples tablas en el documento.
+            """
+            doc = self.get_document(document_id)
+            content = doc.get("body", {}).get("content", [])
+
+            # Buscar la tabla que coincida con el location_index donde la insertamos
+            target_table = None
+            for element in content:
+                # La tabla insertada suele empezar en location_index o location_index + 1
+                if "table" in element and abs(element.get("startIndex", 0) - location_index) <= 1:
+                    target_table = element["table"]
+                    break
+            
+            # Fallback: Si no la encuentra por índice exacto (debido a desplazamientos), 
+            # toma la última tabla del documento (que es la que se acaba de insertar)
+            if target_table is None:
+                tables = [el["table"] for el in content if "table" in el]
+                if tables:
+                    target_table = tables[-1]
+
+            if target_table is None:
+                raise ValueError(f"No se encontró ninguna tabla para rellenar cerca del índice {location_index}")
+
+            cell_positions = []
+            for i, row in enumerate(target_table.get("tableRows", [])):
+                for j, cell in enumerate(row.get("tableCells", [])):
+                    cell_content = cell.get("content", [])
+                    if cell_content:
+                        # Obtenemos el startIndex del primer párrafo de la celda
+                        start_idx = cell_content[0].get("paragraph", {}).get("elements", [{}])[0].get("startIndex")
+                        if start_idx:
+                            cell_positions.append((start_idx, i, j))
+
+            # Orden inverso por startIndex para no desplazar índices mientras insertamos
+            cell_positions.sort(key=lambda x: x[0], reverse=True)
+
+            requests = []
+            for start_idx, i, j in cell_positions:
+                if i < len(data) and j < len(data[i]):
+                    text = data[i][j]
+                    if text:
+                        requests.append({
+                            "insertText": {
+                                "location": {"index": start_idx},
+                                "text": str(text)
+                            }
+                        })
+
+            if not requests:
+                return {"message": "Sin datos para rellenar"}
+
+            return self.service.documents().batchUpdate(
+                documentId=document_id, 
+                body={"requests": requests}
+            ).execute()
